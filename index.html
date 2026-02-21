@@ -588,10 +588,6 @@
                     <div class="stat-label">Total Pledges</div>
                 </div>
                 <div class="stat-card danger">
-                    <div class="stat-value" id="inDangerPledges">0</div>
-                    <div class="stat-label">Pledges In Danger</div>
-                </div>
-                <div class="stat-card danger">
                     <div class="stat-value" id="overduePledges">0</div>
                     <div class="stat-label">Overdue Pledges</div>
                 </div>
@@ -730,7 +726,20 @@
                     </div>
                 </div>
                 <button type="submit" class="btn btn-primary">➕ Add Pledge</button>
+                <button type="button" class="btn btn-secondary" onclick="togglePledgeUploadPanel()" style="margin-left: 10px;">📄 Upload File</button>
             </form>
+            <!-- Bulk Import Pledges from File -->
+            <div id="pledgeUploadPanel" class="card" style="margin-top: 25px; background: #f0f9ff; border: 2px dashed var(--primary); display: none;">
+                <h3 style="margin-bottom: 15px; color: var(--primary);">📄 Bulk Import Pledges from File</h3>
+                <p style="color: var(--text-light); margin-bottom: 15px; font-size: 0.9rem;">Upload a PDF, Word document, or spreadsheet to extract pledge names, amounts, and optional phone numbers.</p>
+                <div class="form-group">
+                    <input type="file" id="pledgeFileUpload" accept=".pdf,.doc,.docx,.xls,.xlsx,.txt" style="padding: 8px; border: 2px solid var(--border); border-radius: 8px; width: 100%;">
+                </div>
+                <button class="btn btn-primary" onclick="handlePledgeFileUpload()" style="width: 100%;">📄 Extract Pledges</button>
+                <div id="pledgeFileUploadStatus" style="margin-top: 10px; font-size: 0.9rem;"></div>
+            </div>
+            <!-- Preview and Edit Extracted Pledges -->
+            <div id="extractedPledgesPreview" style="margin-top: 20px; display: none;"></div>
             <!-- Yearly view panel for selected pledge -->
             <div id="pledgeYearPanel" class="card" style="margin-top: 20px; display: none;"></div>
             <div class="grid" id="pledgesList"></div>
@@ -738,10 +747,21 @@
 
         <!-- Pledge Records Section -->
         <div id="pledgeRecords" class="section">
-            <h2 style="margin-bottom: 20px;">📋 Pledge Records (Completed)</h2>
-            <div class="form-group" style="max-width: 400px;">
-                <label>Search Completed Pledges</label>
-                <input type="text" id="pledgeRecordSearch" placeholder="Search by person name..." oninput="onPledgeRecordSearchChange(event)">
+            <h2 style="margin-bottom: 20px;">📋 Pledge Records</h2>
+            <p style="color: var(--text-light); margin-bottom: 15px;">All pledges (active and completed) with time started and time finished.</p>
+            <div style="display: flex; flex-wrap: wrap; gap: 15px; align-items: center; margin-bottom: 15px;">
+                <div class="form-group" style="max-width: 300px; margin-bottom: 0;">
+                    <label>Search by name</label>
+                    <input type="text" id="pledgeRecordSearch" placeholder="Search by person name..." oninput="onPledgeRecordSearchChange(event)">
+                </div>
+                <div class="form-group" style="max-width: 200px; margin-bottom: 0;">
+                    <label>Filter</label>
+                    <select id="pledgeRecordFilter" onchange="loadPledgeRecords()">
+                        <option value="all">All pledges</option>
+                        <option value="active">Active only</option>
+                        <option value="completed">Completed only</option>
+                    </select>
+                </div>
             </div>
             <div class="grid" id="pledgeRecordsList" style="margin-top: 20px;"></div>
         </div>
@@ -820,7 +840,7 @@
                     <p><strong>Pledge Status:</strong></p>
                     <ul style="padding-left: 20px; margin-top: 10px;">
                         <li><strong>Safe:</strong> Pledge is active and on track (not fully paid but not in danger).</li>
-                        <li><strong>In Danger:</strong> According to RPP, they've missed about 50% of expected payments, or for recurring pledges, they've missed 1 payment period.</li>
+                        <li><strong>In Debt:</strong> According to RPP, they've missed about 50% of expected payments, or for recurring pledges, they've missed 1 payment period.</li>
                         <li><strong>Overdue:</strong> For "Over X Days" pledges, the period has ended but not fully paid. For recurring pledges, they've missed 2+ payment periods.</li>
                         <li><strong>Completed:</strong> Pledge is fully paid and completed.</li>
                     </ul>
@@ -889,6 +909,13 @@
         const UPSTASH_URL = "https://brief-piglet-43973.upstash.io";
         const UPSTASH_TOKEN = "AavFAAIncDE0MzMyYmY1ZTkwMWM0YzJjODIxYmI0Mjg4ZDcyNTk2NHAxNDM5NzM";
         const MONTHLY_FEE = 100;
+
+        function escapeHtml(s) {
+            if (s == null) return '';
+            const div = document.createElement('div');
+            div.textContent = String(s);
+            return div.innerHTML;
+        }
 
         // Upstash Redis API functions
         async function redisGet(key) {
@@ -1179,12 +1206,6 @@
             const activePledges = pledges.filter(p => !p.completed);
             const now = new Date();
             
-            // Calculate overdue pledges (debt > 50% of expected debt scaled to time)
-            const inDangerPledges = activePledges.filter(pledge => {
-                const status = getPledgeStatus(pledge);
-                return status === 'danger';
-            }).length;
-            
             const overduePledges = activePledges.filter(pledge => {
                 const status = getPledgeStatus(pledge);
                 return status === 'overdue';
@@ -1195,7 +1216,6 @@
             document.getElementById('debtStudents').textContent = debtStudents;
             document.getElementById('totalGroups').textContent = groups.length;
             document.getElementById('totalPledges').textContent = activePledges.length;
-            document.getElementById('inDangerPledges').textContent = inDangerPledges;
             document.getElementById('overduePledges').textContent = overduePledges;
         }
 
@@ -1236,7 +1256,7 @@
             
             container.innerHTML = filteredStudents.map(student => {
                 const debt = calculateDebt(student);
-                const studentGroups = groups.filter(g => student.groups.includes(g.id));
+                const studentGroups = groups.filter(g => (student.groups || []).includes(g.id));
                 const hasParentInfo = student.parent && (student.parent.name || student.parent.phone || student.parent.relationship);
                 
                 return `
@@ -1453,7 +1473,7 @@
             panel.innerHTML = `
                 <div class="year-panel-header">
                     <div><strong>${student.name}</strong> – Yearly Payments</div>
-                    <button class="btn btn-danger" style="padding:6px 10px;font-size:0.8rem;" onclick="document.getElementById('pledgeYearPanel').style.display='none'">Close</button>
+                    <button class="btn btn-danger" style="padding:6px 10px;font-size:0.8rem;" onclick="document.getElementById('studentYearPanel').style.display='none'">Close</button>
                 </div>
                 <div class="year-selector">
                     <button type="button" onclick="changeStudentYear(-1)">← Previous Year</button>
@@ -1745,7 +1765,7 @@
             const groupIndex = parseInt(choice) - 1;
             
             if (groupIndex >= 0 && groupIndex < groups.length) {
-                await addStudentToGroup(groups[groupIndex].id, studentId);
+                await addStudentsToGroup(groups[groupIndex].id, [studentId]);
             }
         }
 
@@ -2012,7 +2032,7 @@
         // Alert helper
         function showAlert(containerId, message, type) {
             const container = document.getElementById(containerId);
-            container.innerHTML = `<div class="alert alert-${type}">${message}</div>`;
+            if (container) container.innerHTML = `<div class="alert alert-${escapeHtml(type)}">${escapeHtml(message)}</div>`;
             setTimeout(() => {
                 container.innerHTML = '';
             }, 3000);
@@ -2120,14 +2140,20 @@
             doc.save(`${student.name}_Records.pdf`);
         }
 
-        // Gemini API Keys
+        // Gemini API Keys (cycles through all on rate limit)
         const GEMINI_KEYS = [
             'AIzaSyAaDVm2iSoLZjQrQTR-JP7jjREVsD3IiTo',
             'AIzaSyC1ENitxQXsMJF-KxfnarD6d4Mx2snLK7s',
             'AIzaSyBhmCdjh2YKsun8Q6pzE8cDenlhQWZAIeY',
             'AIzaSyBFPVNOlU3zM-kpzxCf1RT3xSrO8anqsPE',
-            'AIzaSyAYBbt3ebd2OXRcbPfHersULp4A70lctQ4'
+            'AIzaSyAYBbt3ebd2OXRcbPfHersULp4A70lctQ4',
+            'AIzaSyAtRoeu_isDA5oZ_Uk8y__LZ5MaIo8p9Yk',
+            'AIzaSyDy1CeIOwFB3771K4-LzAVYSNbS-Js264M',
+            'AIzaSyC4qfzi7XKj25X7XfEtTfI9MNFJMiYBsR4',
+            'AIzaSyCKETkkHbH5HmpGIZ4nh39gPnT_Dl7x6hs'
         ];
+        // Model to use (change if you get 403/404: try gemini-2.5-flash, gemini-1.5-flash, or gemini-pro)
+        const GEMINI_MODEL = 'gemini-2.5-flash';
         let currentGeminiKeyIndex = 0;
 
         // Extract text from file
@@ -2148,76 +2174,57 @@
             });
         }
 
-        // Call Gemini API
-        async function callGeminiAPI(text, isBase64 = false) {
+        // Transform raw parsed array to pledge format
+        function toPledgeFormat(parsed) {
+            if (!Array.isArray(parsed)) return [];
+            return parsed.map(p => {
+                let scheduleDays = null;
+                if (typeof p.scheduleDays === 'number') scheduleDays = p.scheduleDays;
+                else if (typeof p.overDays === 'number') scheduleDays = p.overDays;
+                else if (typeof p.days === 'number') scheduleDays = p.days;
+                else if (typeof p.schedule === 'string') {
+                    const m = p.schedule.match(/(\d+)\s*day/i);
+                    if (m) scheduleDays = parseInt(m[1], 10);
+                }
+                return {
+                    name: String(p.name || p.person || '').trim() || 'Unknown',
+                    amount: typeof p.amount === 'number' ? p.amount : (typeof p.pledgedAmount === 'number' ? p.pledgedAmount : parseFloat(p.amount || p.pledgedAmount) || 0),
+                    phone: String(p.phone || '').trim(),
+                    scheduleDays: scheduleDays && scheduleDays > 0 ? scheduleDays : null
+                };
+            }).filter(p => p.name && p.name !== 'Unknown' && p.amount > 0);
+        }
+
+        // Call Gemini API (mode: 'students' | 'pledges')
+        async function callGeminiAPI(text, isBase64 = false, mode = 'students') {
             const startTime = Date.now();
             const maxWait = 60000; // 1 minute
+
+            const pledgePromptPdf = `Extract pledges: name, amount (number), phone (opt), scheduleDays (opt). JSON only. Example: [{"name":"John","amount":500,"phone":"555-1234","scheduleDays":6}]`;
+            const pledgePromptText = `Extract pledges: name, amount (number), phone (opt), scheduleDays (opt). JSON only. Example: [{"name":"John","amount":500}]`;
 
             while (Date.now() - startTime < maxWait) {
                 const key = GEMINI_KEYS[currentGeminiKeyIndex];
                 try {
                     let body;
                     if (isBase64) {
+                        const promptText = mode === 'pledges' ? pledgePromptPdf : `Extract students: name, parentName, parentPhone, relationship. JSON only. Example: [{"name":"John","parentName":"Jane","parentPhone":"555-1234","relationship":"Mom"}]`;
                         body = JSON.stringify({
                             contents: [{
                                 parts: [
-                                    {
-                                        text: `Extract ALL student names and parent information from this document. SCAN THOROUGHLY for:
-- Student names (any capitalized names, each row/line is a separate student)
-- Parent names (look for "Parent:", "Mom:", "Dad:", "Mother:", "Father:", "Guardian:" or names near student names)
-- Phone numbers (any format: 123-456-7890, (123) 456-7890, 123.456.7890, 1234567890, etc.)
-- Relationships (Mom, Dad, Mother, Father, Guardian, etc.)
-
-IMPORTANT: Return ONLY a valid JSON array, no other text. Each object must have: name (required), parentName (optional), parentPhone (optional), relationship (optional).
-
-Example: [{"name":"John Doe","parentName":"Jane Doe","parentPhone":"123-456-7890","relationship":"Mom"}]
-
-SCAN EVERY ROW AND COLUMN THOROUGHLY.`
-                                    },
-                                    {
-                                        inline_data: {
-                                            mime_type: "application/pdf",
-                                            data: text.split(',')[1]
-                                        }
-                                    }
+                                    { text: promptText },
+                                    { inline_data: { mime_type: "application/pdf", data: text.split(',')[1] } }
                                 ]
                             }]
                         });
                     } else {
+                        const textPrompt = mode === 'pledges' ? (pledgePromptText + '\n\n' + text) : `Extract students: name, parentName, parentPhone, relationship. JSON only. Example: [{"name":"John","parentName":"Jane","parentPhone":"555-1234","relationship":"Mom"}]\n\nText:\n${text}`;
                         body = JSON.stringify({
-                            contents: [{
-                                parts: [{
-                                    text: `Extract ALL student names and parent information from this text. SCAN THOROUGHLY for:
-- Student names (any capitalized names)
-- Parent names (look for "Parent:", "Mom:", "Dad:", "Mother:", "Father:", "Guardian:" or names near student names)
-- Phone numbers (any format: 123-456-7890, (123) 456-7890, 123.456.7890, 1234567890, etc.)
-- Relationships (Mom, Dad, Mother, Father, Guardian, etc.)
-
-IMPORTANT: You must return ONLY a valid JSON array, no other text, no explanations, no markdown formatting. The response must start with [ and end with ].
-
-Each object in the array must have these exact fields:
-- name: (string, required) - student name
-- parentName: (string, optional) - parent name if found (scan for any name near the student name)
-- parentPhone: (string, optional) - parent phone if found (any phone number format)
-- relationship: (string, optional) - "Mom", "Dad", "Guardian", or "Other" if found
-
-SCAN EVERY LINE THOROUGHLY. Look for patterns like:
-- Student Name - Parent Name - Phone
-- Student Name (Mom: Parent Name, Phone: 123-456-7890)
-- Student Name | Parent Name | Phone
-- Any format where student and parent info appear together
-
-Example format:
-[{"name":"John Doe","parentName":"Jane Doe","parentPhone":"123-456-7890","relationship":"Mom"}]
-
-Text to extract from:
-${text}`
-                                }]
-                            }]
+                            contents: [{ parts: [{ text: textPrompt }] }]
                         });
                     }
 
-                    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`, {
+                    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${key}`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: body
@@ -2239,7 +2246,7 @@ ${text}`
                     if (jsonMatch) {
                         try {
                             const parsed = JSON.parse(jsonMatch[0]);
-                            if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+                            if (Array.isArray(parsed) && parsed.length > 0) return mode === 'pledges' ? toPledgeFormat(parsed) : parsed;
                         } catch (e) {
                             // Try to fix common JSON issues
                             let fixed = jsonMatch[0]
@@ -2249,7 +2256,7 @@ ${text}`
                                 .replace(/(\w+):/g, '"$1":'); // Add quotes to keys
                             try {
                                 const parsed = JSON.parse(fixed);
-                                if (Array.isArray(parsed)) return parsed;
+                                if (Array.isArray(parsed)) return mode === 'pledges' ? toPledgeFormat(parsed) : parsed;
                             } catch (e2) {}
                         }
                     }
@@ -2259,7 +2266,7 @@ ${text}`
                     if (jsonMatch && jsonMatch[1]) {
                         try {
                             const parsed = JSON.parse(jsonMatch[1]);
-                            if (Array.isArray(parsed)) return parsed;
+                            if (Array.isArray(parsed)) return mode === 'pledges' ? toPledgeFormat(parsed) : parsed;
                         } catch (e) {}
                     }
                     
@@ -2275,11 +2282,11 @@ ${text}`
                             .replace(/([{,]\s*)(\w+)(\s*:)/g, '$1"$2"$3'); // Quote keys
                         try {
                             const parsed = JSON.parse(jsonStr);
-                            if (Array.isArray(parsed)) return parsed;
+                            if (Array.isArray(parsed)) return mode === 'pledges' ? toPledgeFormat(parsed) : parsed;
                         } catch (e) {}
                     }
                     
-                    // Strategy 4: Extract names from text (handles lists, tables, plain text) WITH PARENT INFO
+                    // Strategy 4: Extract names from text (students only) (handles lists, tables, plain text) WITH PARENT INFO
                     const students = [];
                     const foundNames = new Set();
                     
@@ -2349,7 +2356,7 @@ ${text}`
                         }
                     }
                     
-                    // If we found table rows, return them
+                    // If we found table rows, return them (strategy 4 is students-only)
                     if (students.length > 0) return students;
                     
                     // For plain text: split by lines and extract student + parent info
@@ -2461,18 +2468,17 @@ ${text}`
                     // Last resort: try to parse the whole content
                     try {
                         const parsed = JSON.parse(content);
-                        if (Array.isArray(parsed)) return parsed;
+                        if (Array.isArray(parsed)) return mode === 'pledges' ? toPledgeFormat(parsed) : parsed;
                         if (parsed.students && Array.isArray(parsed.students)) return parsed.students;
-                        return [parsed];
+                        return mode === 'pledges' ? toPledgeFormat([parsed]) : [parsed];
                     } catch (e) {
                         throw new Error('Could not extract valid JSON from API response. Content: ' + content.substring(0, 200));
                     }
                 } catch (error) {
-                    console.error(`Gemini API key ${currentGeminiKeyIndex + 1} failed:`, error);
+                    console.error(`Gemini key ${currentGeminiKeyIndex + 1}/${GEMINI_KEYS.length} failed:`, error.message);
                     currentGeminiKeyIndex = (currentGeminiKeyIndex + 1) % GEMINI_KEYS.length;
                     if (currentGeminiKeyIndex === 0) {
-                        // Waited 10 seconds before retrying
-                        await new Promise(resolve => setTimeout(resolve, 10000));
+                        await new Promise(resolve => setTimeout(resolve, 15000)); // Wait for rate limits
                     }
                 }
             }
@@ -2674,13 +2680,258 @@ ${text}`
             loadDashboard();
         }
 
+        // Parse pledges from plain text without AI (fallback when API fails)
+        function extractPledgesFromText(text) {
+            const pledges = [];
+            const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+            const numRe = /[\d,]+\.?\d*/;
+            const dayRe = /(\d+)\s*day/i;
+            for (const line of lines) {
+                if (/^(name|person|pledge|amount|donation|header|column)/i.test(line)) continue;
+                const parts = line.split(/[\t,|;]/).map(p => p.trim()).filter(Boolean);
+                if (parts.length < 2) continue;
+                let name = '';
+                let amount = 0;
+                let phone = '';
+                let scheduleDays = null;
+                for (let i = 0; i < parts.length; i++) {
+                    const p = parts[i];
+                    const amt = parseFloat(p.replace(/[$,]/g, ''));
+                    const dayM = p.match(dayRe);
+                    if (!isNaN(amt) && amt > 0 && amt < 1000000 && !amount) amount = amt;
+                    else if (dayM && !scheduleDays) scheduleDays = parseInt(dayM[1], 10);
+                    else if (/^\d[\d\-\s\.\(\)]{7,}$/.test(p) && !phone) phone = p;
+                    else if (/^[A-Za-z][A-Za-z\s\.\'\-]+$/.test(p) && p.length > 1 && p.length < 50 && !name) name = p.trim();
+                }
+                if (name && amount > 0) pledges.push({ name, amount, phone: phone || '', scheduleDays });
+            }
+            return pledges;
+        }
+
+        // Pledge bulk upload
+        function togglePledgeUploadPanel() {
+            const panel = document.getElementById('pledgeUploadPanel');
+            if (panel) panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+        }
+
+        async function handlePledgeFileUpload() {
+            const fileInput = document.getElementById('pledgeFileUpload');
+            const statusDiv = document.getElementById('pledgeFileUploadStatus');
+            const previewDiv = document.getElementById('extractedPledgesPreview');
+            if (!fileInput?.files?.length) {
+                statusDiv.innerHTML = '<span style="color: var(--danger);">Please select a file first.</span>';
+                return;
+            }
+            const file = fileInput.files[0];
+            statusDiv.innerHTML = '<span style="color: var(--primary);">⏳ Processing file...</span>';
+            try {
+                let extractedData;
+                if (file.type === 'application/pdf') {
+                    const base64 = await new Promise((resolve, reject) => {
+                        const reader = new FileReader();
+                        reader.onload = e => resolve(e.target.result);
+                        reader.onerror = reject;
+                        reader.readAsDataURL(file);
+                    });
+                    try {
+                        extractedData = await callGeminiAPI(base64, true, 'pledges');
+                    } catch (apiErr) {
+                        statusDiv.innerHTML = `<span style="color: var(--danger);">API error (try enabling Gemini API): ${apiErr.message}. For PDF, AI is required.</span>`;
+                        return;
+                    }
+                } else {
+                    const text = await extractTextFromFile(file);
+                    try {
+                        extractedData = await callGeminiAPI(text, false, 'pledges');
+                    } catch (apiErr) {
+                        statusDiv.innerHTML = '<span style="color: var(--primary);">AI unavailable, trying local parse...</span>';
+                        extractedData = extractPledgesFromText(text);
+                        if (!extractedData.length) {
+                            statusDiv.innerHTML = `<span style="color: var(--danger);">Could not extract pledges. API error: ${apiErr.message}. Try CSV/text with columns: Name, Amount, Phone, Schedule Days</span>`;
+                            return;
+                        }
+                    }
+                }
+                if (!Array.isArray(extractedData) || extractedData.length === 0) {
+                    statusDiv.innerHTML = '<span style="color: var(--danger);">No pledges found in the file.</span>';
+                    return;
+                }
+                statusDiv.innerHTML = `<span style="color: var(--secondary);">✅ Found ${extractedData.length} pledge(s). Review and edit below. Make sure each has name, amount, and schedule days.</span>`;
+                previewDiv.style.display = 'block';
+                previewDiv.innerHTML = `
+                    <div class="card" style="background: #f0f9ff;">
+                        <h3 style="margin-bottom: 15px;">Review Extracted Pledges</h3>
+                        <div id="extractedPledgesList"></div>
+                        <div style="margin-top: 20px; display: flex; gap: 10px;">
+                            <button class="btn btn-success" onclick="acceptExtractedPledges()">✅ Accept All</button>
+                            <button class="btn btn-danger" onclick="document.getElementById('extractedPledgesPreview').style.display='none'">❌ Cancel</button>
+                        </div>
+                    </div>
+                `;
+                window.extractedPledgesData = extractedData;
+                const listDiv = document.getElementById('extractedPledgesList');
+                listDiv.innerHTML = extractedData.map((p, idx) => {
+                    const name = String(p.name || '').trim() || 'Unknown';
+                    const amount = typeof p.amount === 'number' ? p.amount : (parseFloat(p.amount) || 0);
+                    const phone = String(p.phone || '').trim();
+                    const rawScheduleDays = p.scheduleDays ?? p.days ?? p.overDays;
+                    const scheduleDays = typeof rawScheduleDays === 'number'
+                        ? rawScheduleDays
+                        : parseInt(rawScheduleDays || '', 10) || 0;
+                    return `
+                        <div class="card" style="margin-bottom: 10px;" id="pledge_ext_card_${idx}">
+                            <div id="pledge_ext_view_${idx}">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                                    <div>
+                                        <strong>${name}</strong>
+                                        <div style="color: var(--text-light); font-size: 0.9rem;">Amount: $${amount.toFixed(2)}</div>
+                                        ${phone ? `<div style="color: var(--text-light); font-size: 0.9rem;">Phone: ${phone}</div>` : ''}
+                                        ${scheduleDays > 0
+                                            ? `<div style="color: var(--text-light); font-size: 0.9rem;">Schedule: Over ${scheduleDays} day(s)</div>`
+                                            : `<div style="color: var(--danger); font-size: 0.85rem; font-weight: 600;">Schedule: REQUIRED – click Edit and enter days.</div>`}
+                                    </div>
+                                    <button class="btn btn-primary" onclick="toggleEditPledge(${idx})" style="padding: 6px 12px; font-size: 0.85rem;">✏️ Edit</button>
+                                </div>
+                            </div>
+                            <div id="pledge_ext_edit_${idx}" style="display: none;">
+                                <div class="form-group">
+                                    <label>Name *</label>
+                                    <input type="text" id="pledge_ext_name_${idx}" value="${name.replace(/"/g, '&quot;')}" style="width: 100%; padding: 8px;" required>
+                                </div>
+                                <div class="form-group">
+                                    <label>Amount ($) *</label>
+                                    <input type="number" id="pledge_ext_amount_${idx}" value="${amount}" step="0.01" min="0" style="width: 100%; padding: 8px;">
+                                </div>
+                                <div class="form-group">
+                                    <label>Phone</label>
+                                    <input type="tel" id="pledge_ext_phone_${idx}" value="${phone.replace(/"/g, '&quot;')}" style="width: 100%; padding: 8px;">
+                                </div>
+                                <div class="form-group">
+                                    <label>Over how many days? *</label>
+                                    <input type="number" id="pledge_ext_schedule_${idx}" value="${scheduleDays || ''}" min="1" step="1" style="width: 100%; padding: 8px;">
+                                    <small style="font-size: 0.8rem; color: var(--text-light);">Example: 6 for "over 6 days"</small>
+                                </div>
+                                <button class="btn btn-success" onclick="toggleEditPledge(${idx})" style="width: 100%; margin-top: 10px;">✅ Done Editing</button>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            } catch (error) {
+                statusDiv.innerHTML = `<span style="color: var(--danger);">❌ Error: ${error.message}</span>`;
+            }
+        }
+
+        function toggleEditPledge(idx) {
+            const viewDiv = document.getElementById(`pledge_ext_view_${idx}`);
+            const editDiv = document.getElementById(`pledge_ext_edit_${idx}`);
+            if (!viewDiv || !editDiv) return;
+            const isEditing = editDiv.style.display !== 'none';
+            viewDiv.style.display = isEditing ? 'block' : 'none';
+            editDiv.style.display = isEditing ? 'none' : 'block';
+            if (!isEditing) {
+                const name = document.getElementById(`pledge_ext_name_${idx}`)?.value || '';
+                const amount = document.getElementById(`pledge_ext_amount_${idx}`)?.value || '0';
+                const phone = document.getElementById(`pledge_ext_phone_${idx}`)?.value || '';
+                const scheduleVal = document.getElementById(`pledge_ext_schedule_${idx}`)?.value || '';
+                const scheduleDays = parseInt(scheduleVal, 10) || 0;
+                viewDiv.innerHTML = `
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                        <div>
+                            <strong>${name || 'Unknown'}</strong>
+                            <div style="color: var(--text-light); font-size: 0.9rem;">Amount: $${parseFloat(amount).toFixed(2)}</div>
+                            ${phone ? `<div style="color: var(--text-light); font-size: 0.9rem;">Phone: ${phone}</div>` : ''}
+                            ${scheduleDays > 0
+                                ? `<div style="color: var(--text-light); font-size: 0.9rem;">Schedule: Over ${scheduleDays} day(s)</div>`
+                                : `<div style="color: var(--danger); font-size: 0.85rem; font-weight: 600;">Schedule: REQUIRED – click Edit and enter days.</div>`}
+                        </div>
+                        <button class="btn btn-primary" onclick="toggleEditPledge(${idx})" style="padding: 6px 12px; font-size: 0.85rem;">✏️ Edit</button>
+                    </div>
+                `;
+            }
+        }
+
+        async function acceptExtractedPledges() {
+            if (!window.extractedPledgesData) return;
+            const pledges = await getPledges();
+            let hasInvalid = false;
+            const newPledges = window.extractedPledgesData.map((p, idx) => {
+                const nameInput = document.getElementById(`pledge_ext_name_${idx}`);
+                const amountInput = document.getElementById(`pledge_ext_amount_${idx}`);
+                const phoneInput = document.getElementById(`pledge_ext_phone_${idx}`);
+                const scheduleInput = document.getElementById(`pledge_ext_schedule_${idx}`);
+                const name = (nameInput?.value || p.name || '').trim();
+                const amount = parseFloat(amountInput?.value ?? p.amount) || 0;
+                const phone = (phoneInput?.value ?? p.phone ?? '').trim();
+                const scheduleDays = parseInt(scheduleInput?.value ?? (p.scheduleDays ?? ''), 10);
+                if (!name || amount <= 0 || !scheduleDays || isNaN(scheduleDays) || scheduleDays <= 0) {
+                    hasInvalid = true;
+                    return null;
+                }
+                const targetDate = (() => {
+                    const d = new Date();
+                    d.setDate(d.getDate() + scheduleDays);
+                    return d.toISOString().split('T')[0];
+                })();
+                return normalizePledge({
+                    id: Date.now().toString() + '-' + idx,
+                    name: name,
+                    phone: phone,
+                    pledgedAmount: amount,
+                    schedule: String(scheduleDays),
+                    targetDate: targetDate,
+                    recurringDays: null,
+                    payments: [],
+                    chargeRecords: [],
+                    forgivenRecords: [],
+                    createdAt: new Date().toISOString(),
+                    completed: false
+                });
+            }).filter(Boolean);
+            if (hasInvalid) {
+                showAlert('pledgeAlert', 'Please fill name, amount, and schedule days for every pledge before accepting.', 'error');
+                return;
+            }
+            pledges.push(...newPledges);
+            await savePledges(pledges);
+            document.getElementById('pledgeFileUpload').value = '';
+            document.getElementById('pledgeFileUploadStatus').innerHTML = '';
+            document.getElementById('extractedPledgesPreview').style.display = 'none';
+            window.extractedPledgesData = null;
+            showAlert('pledgeAlert', `Successfully added ${newPledges.length} pledge(s)!`, 'success');
+            loadPledges();
+            loadDashboard();
+        }
+
         // Pledges functions
+        function normalizePledge(p) {
+            if (!p || typeof p !== 'object') return null;
+            return {
+                id: p.id || Date.now().toString() + Math.random().toString(36).slice(2),
+                name: p.name || 'Unknown',
+                phone: p.phone != null ? p.phone : '',
+                pledgedAmount: typeof p.pledgedAmount === 'number' ? p.pledgedAmount : (parseFloat(p.pledgedAmount) || 0),
+                schedule: p.schedule || 'byDate',
+                targetDate: p.targetDate || null,
+                recurringDays: p.recurringDays != null ? p.recurringDays : null,
+                payments: Array.isArray(p.payments) ? p.payments : [],
+                chargeRecords: Array.isArray(p.chargeRecords) ? p.chargeRecords : [],
+                forgivenRecords: Array.isArray(p.forgivenRecords) ? p.forgivenRecords : [],
+                createdAt: p.createdAt || new Date().toISOString(),
+                completed: Boolean(p.completed),
+                completedDate: p.completedDate || null
+            };
+        }
+
         async function getPledges() {
-            return await redisGet('pledges') || [];
+            const raw = await redisGet('pledges');
+            const list = Array.isArray(raw) ? raw : (raw ? [raw] : []);
+            return list.map(normalizePledge).filter(Boolean);
         }
 
         async function savePledges(pledges) {
-            return await redisSet('pledges', pledges);
+            const normalized = (Array.isArray(pledges) ? pledges : []).map(normalizePledge).filter(Boolean);
+            const result = await redisSet('pledges', normalized);
+            return result;
         }
 
         function updatePledgeDateOptions() {
@@ -2755,18 +3006,18 @@ ${text}`
         }
 
         // Calculate RPP Debt (for "over X days" pledges - based on daily payment plan)
+        // From day 1 (creation day) they owe the first day's amount
         function calculateRPPDebt(pledge) {
-            if (pledge.schedule === 'byDate' || isNaN(parseInt(pledge.schedule))) {
-                // Not an "over X days" pledge, use regular calculation
+            const days = parseInt(pledge.schedule, 10);
+            if (pledge.schedule === 'byDate' || !days || days <= 0 || isNaN(days)) {
                 return calculatePledgeDebt(pledge);
             }
-            
-            const days = parseInt(pledge.schedule);
             const dailyAmount = (pledge.pledgedAmount || 0) / days;
             const now = new Date();
             const created = new Date(pledge.createdAt);
             const daysSinceCreation = Math.floor((now - created) / (1000 * 60 * 60 * 24));
-            const daysElapsed = Math.min(daysSinceCreation, days);
+            // Count creation day as day 1 so they owe from the start
+            const daysElapsed = Math.min(daysSinceCreation + 1, days);
             
             const totalPaid = (Array.isArray(pledge.payments) ? pledge.payments : []).reduce((sum, p) => sum + (p.amount || 0), 0);
             const totalForgiven = (Array.isArray(pledge.forgivenRecords) ? pledge.forgivenRecords : []).reduce((sum, f) => sum + (f.amount || 0), 0);
@@ -2824,11 +3075,11 @@ ${text}`
                 if (periodsMissed >= 1) return 'danger';
                 return 'safe';
             } else if (pledge.schedule !== 'byDate' && !isNaN(parseInt(pledge.schedule))) {
-                // "Over X days" - use RPP
-                const days = parseInt(pledge.schedule);
+                const days = parseInt(pledge.schedule, 10);
+                if (!days || days <= 0) return 'safe';
                 const dailyAmount = (pledge.pledgedAmount || 0) / days;
                 const daysSinceCreation = Math.floor((now - created) / (1000 * 60 * 60 * 24));
-                const daysElapsed = Math.min(daysSinceCreation, days);
+                const daysElapsed = Math.min(daysSinceCreation + 1, days);
                 const expectedPayment = dailyAmount * daysElapsed;
                 const actualPayment = totalPaid + totalForgiven;
                 
@@ -2860,17 +3111,19 @@ ${text}`
             const totalForgiven = (Array.isArray(pledge.forgivenRecords) ? pledge.forgivenRecords : []).reduce((sum, f) => sum + (f.amount || 0), 0);
             const totalAvailable = totalPaid + totalForgiven;
             
-            if (pledge.schedule === 'recurring' && pledge.recurringDays) {
+            if (pledge.schedule === 'recurring' && pledge.recurringDays && pledge.pledgedAmount > 0) {
                 const daysSinceCreation = Math.floor((now - created) / (1000 * 60 * 60 * 24));
                 const periods = Math.floor(daysSinceCreation / pledge.recurringDays);
-                const periodsPaid = Math.floor(totalAvailable / (pledge.pledgedAmount || 0));
+                const periodsPaid = Math.floor(totalAvailable / pledge.pledgedAmount);
                 const nextPeriod = (periodsPaid + 1) * pledge.recurringDays;
                 const nextDate = new Date(created);
                 nextDate.setDate(nextDate.getDate() + nextPeriod);
                 return nextDate;
             } else if (pledge.schedule !== 'byDate' && !isNaN(parseInt(pledge.schedule))) {
-                const days = parseInt(pledge.schedule);
+                const days = parseInt(pledge.schedule, 10);
+                if (!days || days <= 0) return null;
                 const dailyAmount = (pledge.pledgedAmount || 0) / days;
+                if (dailyAmount <= 0) return null;
                 const daysPaid = Math.floor(totalAvailable / dailyAmount);
                 const daysSinceCreation = Math.floor((now - created) / (1000 * 60 * 60 * 24));
                 
@@ -2891,8 +3144,9 @@ ${text}`
             if (pledge.schedule === 'recurring' && pledge.recurringDays) {
                 return pledge.pledgedAmount || 0;
             } else if (pledge.schedule !== 'byDate' && !isNaN(parseInt(pledge.schedule))) {
-                const days = parseInt(pledge.schedule);
-                return (pledge.pledgedAmount || 0) / days; // Daily amount
+                const days = parseInt(pledge.schedule, 10);
+                if (!days || days <= 0) return 0;
+                return (pledge.pledgedAmount || 0) / days;
             } else if (pledge.schedule === 'byDate' && pledge.targetDate) {
                 const now = new Date();
                 const targetDate = new Date(pledge.targetDate);
@@ -2965,7 +3219,7 @@ ${text}`
                             <div style="flex: 1; min-width: 0;">
                                 <div class="card-title" style="word-break: break-word;">${pledge.name}</div>
                                 ${pledge.phone ? `<div style="margin-top: 4px; color: var(--text-light); font-size: 0.9rem; word-break: break-word;">📞 ${pledge.phone}</div>` : ''}
-                                ${status === 'danger' ? '<div style="margin-top: 4px; color: var(--danger); font-size: 0.85rem; font-weight: 600;">⚠️ In Danger</div>' : ''}
+                                ${status === 'danger' ? '<div style="margin-top: 4px; color: var(--danger); font-size: 0.85rem; font-weight: 600;">⚠️ In Debt</div>' : ''}
                                 ${status === 'overdue' ? '<div style="margin-top: 4px; color: var(--danger); font-size: 0.85rem; font-weight: 600;">🚨 Overdue</div>' : ''}
                             </div>
                             <div style="flex-shrink: 0;">
@@ -2980,7 +3234,8 @@ ${text}`
                                 ${totalForgiven > 0 ? `<div><strong>Total Forgiven:</strong> $${totalForgiven.toFixed(2)}</div>` : ''}
                                 <div><strong>Schedule:</strong> ${scheduleText}</div>
                                 ${pledge.schedule !== 'byDate' && !isNaN(parseInt(pledge.schedule)) && status !== 'overdue' ? (() => {
-                                    const days = parseInt(pledge.schedule);
+                                    const days = parseInt(pledge.schedule, 10);
+                                    if (!days || days <= 0) return '';
                                     const dailyAmount = (pledge.pledgedAmount || 0) / days;
                                     return `<div style="margin-top: 10px; padding: 10px; background: #f0f9ff; border-radius: 8px; border: 1px solid var(--primary);">
                                         <div style="font-weight: 600; color: var(--primary); margin-bottom: 5px;">📋 RPP (Recommended Payment Plan)</div>
@@ -3052,13 +3307,15 @@ ${text}`
             showAlert('pledgeAlert', 'Pledge ended and moved to records!', 'success');
         }
 
-        // Delete Pledge Record
+        // Delete all pledges for a person (Records view)
         async function deletePledgeRecord(personName) {
-            if (!confirm(`Are you sure you want to delete all pledge records for ${personName}? This cannot be undone.`)) return;
+            if (!confirm(`Are you sure you want to delete ALL pledges for ${personName}? This cannot be undone.`)) return;
             const pledges = await getPledges();
-            const newPledges = pledges.filter(p => p.name.toLowerCase() !== personName.toLowerCase() || !p.completed);
+            const newPledges = pledges.filter(p => p.name.toLowerCase() !== personName.toLowerCase());
             await savePledges(newPledges);
             loadPledgeRecords();
+            loadPledges();
+            loadDashboard();
             showAlert('pledgeAlert', 'Pledge records deleted!', 'success');
         }
 
@@ -3231,43 +3488,38 @@ ${text}`
 
         async function loadPledgeRecords() {
             const pledges = await getPledges();
-            const completedPledges = pledges.filter(p => p.completed === true);
-            const container = document.getElementById('pledgeRecordsList');
+            const filterVal = document.getElementById('pledgeRecordFilter')?.value || 'all';
+            let list = pledges;
+            if (filterVal === 'active') list = pledges.filter(p => !p.completed);
+            else if (filterVal === 'completed') list = pledges.filter(p => p.completed === true);
 
             const filtered = pledgeRecordSearchText
-                ? completedPledges.filter(p => p.name.toLowerCase().includes(pledgeRecordSearchText))
-                : completedPledges;
+                ? list.filter(p => p.name.toLowerCase().includes(pledgeRecordSearchText))
+                : list;
+
+            const container = document.getElementById('pledgeRecordsList');
 
             if (filtered.length === 0) {
-                container.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📋</div><h3>No completed pledges yet</h3><p>Completed pledges will appear here.</p></div>';
+                container.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📋</div><h3>No pledges match</h3><p>Adjust the filter or search.</p></div>';
                 return;
             }
 
-            // Group pledges by person name
+            // Group pledges by person name (merge same person)
             const grouped = {};
             filtered.forEach(pledge => {
-                const name = pledge.name.toLowerCase();
-                if (!grouped[name]) {
-                    grouped[name] = [];
-                }
-                grouped[name].push(pledge);
+                const key = pledge.name.toLowerCase().trim();
+                if (!grouped[key]) grouped[key] = [];
+                grouped[key].push(pledge);
             });
 
-            container.innerHTML = Object.keys(grouped).map(personName => {
-                const personPledges = grouped[personName];
-                const firstPledge = personPledges[0];
-                const totalPaid = personPledges.reduce((sum, p) => {
-                    return sum + (Array.isArray(p.payments) ? p.payments : []).reduce((s, pay) => s + (pay.amount || 0), 0);
-                }, 0);
+            container.innerHTML = Object.keys(grouped).map(personKey => {
+                const personPledges = grouped[personKey];
+                const first = personPledges[0];
+                const totalPaid = personPledges.reduce((sum, p) => sum + (Array.isArray(p.payments) ? p.payments : []).reduce((s, pay) => s + (pay.amount || 0), 0), 0);
                 const totalPledged = personPledges.reduce((sum, p) => sum + (p.pledgedAmount || 0), 0);
-                const totalCharges = personPledges.reduce((sum, p) => {
-                    return sum + (Array.isArray(p.chargeRecords) ? p.chargeRecords : []).reduce((s, c) => s + (c.amount || 0), 0);
-                }, 0);
-                const totalForgiven = personPledges.reduce((sum, p) => {
-                    return sum + (Array.isArray(p.forgivenRecords) ? p.forgivenRecords : []).reduce((s, f) => s + (f.amount || 0), 0);
-                }, 0);
+                const totalCharges = personPledges.reduce((sum, p) => sum + (Array.isArray(p.chargeRecords) ? p.chargeRecords : []).reduce((s, c) => s + (c.amount || 0), 0), 0);
+                const totalForgiven = personPledges.reduce((sum, p) => sum + (Array.isArray(p.forgivenRecords) ? p.forgivenRecords : []).reduce((s, f) => s + (f.amount || 0), 0), 0);
 
-                // Combine all entries from all pledges
                 const allEntries = [];
                 personPledges.forEach(pledge => {
                     const payments = Array.isArray(pledge.payments) ? pledge.payments : [];
@@ -3279,16 +3531,23 @@ ${text}`
                 });
                 allEntries.sort((a, b) => new Date(b.date) - new Date(a.date));
 
+                const pledgesListHtml = personPledges.map(p => {
+                    const timeStarted = p.createdAt ? new Date(p.createdAt).toLocaleString() : '—';
+                    const timeFinished = p.completed && p.completedDate ? new Date(p.completedDate).toLocaleString() : 'Active';
+                    const statusLabel = p.completed ? 'Completed' : 'Active';
+                    return `<li style="margin-bottom: 8px;">$${(p.pledgedAmount || 0).toFixed(2)} — <strong>Started:</strong> ${timeStarted} | <strong>Finished:</strong> ${timeFinished} <span class="badge ${p.completed ? 'badge-success' : 'badge-primary'}" style="margin-left:6px;">${statusLabel}</span></li>`;
+                }).join('');
+
                 return `
                     <div class="card" style="border: 2px solid var(--primary);">
                         <div class="card-header">
                             <div>
-                                <div class="card-title">${firstPledge.name} ${personPledges.length > 1 ? `(${personPledges.length} pledges)` : ''}</div>
-                                ${firstPledge.phone ? `<div style="margin-top: 4px; color: var(--text-light); font-size: 0.9rem;">📞 ${firstPledge.phone}</div>` : ''}
+                                <div class="card-title">${first.name} ${personPledges.length > 1 ? `(${personPledges.length} pledges)` : ''}</div>
+                                ${first.phone ? `<div style="margin-top: 4px; color: var(--text-light); font-size: 0.9rem;">📞 ${first.phone}</div>` : ''}
                             </div>
                             <div style="display: flex; gap: 10px;">
-                                <button class="btn btn-primary" onclick="downloadPledgePDF('${firstPledge.name}')" style="padding:8px 16px;font-size:0.9rem;">📥 Download PDF</button>
-                                <button class="btn btn-danger" onclick="deletePledgeRecord('${firstPledge.name}')" style="padding:8px 16px;font-size:0.9rem;">🗑 Delete</button>
+                                <button class="btn btn-primary" onclick="downloadPledgePDF('${first.name.replace(/'/g, "\\'")}')" style="padding:8px 16px;font-size:0.9rem;">📥 Download PDF</button>
+                                <button class="btn btn-danger" onclick="deletePledgeRecord('${first.name.replace(/'/g, "\\'")}')" style="padding:8px 16px;font-size:0.9rem;">🗑 Delete all</button>
                             </div>
                         </div>
                         <div class="card-body">
@@ -3298,26 +3557,56 @@ ${text}`
                                 ${totalCharges > 0 ? `<div><strong>Additional Charges:</strong> $${totalCharges.toFixed(2)}</div>` : ''}
                                 ${totalForgiven > 0 ? `<div><strong>Total Forgiven:</strong> $${totalForgiven.toFixed(2)}</div>` : ''}
                             </div>
-                            ${personPledges.length > 1 ? 
-                                '<div style="margin-top: 10px;"><strong>Pledges:</strong><ul style="margin-top: 5px; padding-left: 20px; font-size: 0.9rem;">' + 
-                                personPledges.map(p => `<li>$${p.pledgedAmount.toFixed(2)} - Completed: ${new Date(p.completedDate).toLocaleDateString()}</li>`).join('') + 
-                                '</ul></div>' : ''
-                            }
-                            ${allEntries.length > 0 ? 
-                                '<div style="margin-top: 10px;"><strong>All Records:</strong><ul style="margin-top: 5px; padding-left: 20px; font-size: 0.9rem;">' + 
-                                allEntries.map(entry => {
+                            <div style="margin-top: 10px;"><strong>Pledges (time started / time finished):</strong><ul style="margin-top: 6px; padding-left: 20px; font-size: 0.9rem;">${pledgesListHtml}</ul></div>
+                            ${allEntries.length > 0 ? (() => {
+                                const showFirst = 10;
+                                const shortList = allEntries.slice(0, showFirst);
+                                const fullList = allEntries;
+                                const personId = personKey.replace(/[^a-z0-9]/g, '_');
+                                const shortHtml = shortList.map(entry => {
                                     const date = new Date(entry.date);
                                     let text = `${entry.type}: $${entry.amount.toFixed(2)} - ${date.toLocaleString()}`;
-                                    if (entry.type === 'Payment' && entry.method) text += ` (Method: ${entry.method})`;
-                                    if (entry.reason) text += ` (Reason: ${entry.reason})`;
+                                    if (entry.type === 'Payment' && entry.method) text += ` (${entry.method})`;
+                                    if (entry.reason) text += ` (${entry.reason})`;
                                     return `<li>${text}</li>`;
-                                }).join('') + '</ul></div>' : 
-                                '<p style="color: var(--text-light);">No records yet.</p>'
-                            }
+                                }).join('');
+                                const fullHtml = fullList.map(entry => {
+                                    const date = new Date(entry.date);
+                                    let text = `${entry.type}: $${entry.amount.toFixed(2)} - ${date.toLocaleString()}`;
+                                    if (entry.type === 'Payment' && entry.method) text += ` (${entry.method})`;
+                                    if (entry.reason) text += ` (${entry.reason})`;
+                                    return `<li>${text}</li>`;
+                                }).join('');
+                                const moreCount = fullList.length - showFirst;
+                                if (moreCount <= 0) {
+                                    return '<div style="margin-top: 10px;"><strong>All Records:</strong><ul style="margin-top: 5px; padding-left: 20px; font-size: 0.9rem;">' + shortHtml + '</ul></div>';
+                                }
+                                return '<div style="margin-top: 10px;"><strong>Records:</strong> ' +
+                                    '<ul id="records-short-' + personId + '" style="margin-top: 5px; padding-left: 20px; font-size: 0.9rem;">' + shortHtml + '</ul>' +
+                                    '<ul id="records-full-' + personId + '" style="display:none; margin-top: 5px; padding-left: 20px; font-size: 0.9rem;">' + fullHtml + '</ul>' +
+                                    '<button type="button" class="btn btn-secondary" style="margin-top: 8px; padding: 6px 12px; font-size: 0.85rem;" onclick="togglePledgeRecordsVisibility(\'' + personId + '\', ' + fullList.length + ')">Show all records (' + fullList.length + ')</button>' +
+                                    '</div>';
+                            })() : '<p style="color: var(--text-light); margin-top: 10px;">No payment records yet.</p>'}
                         </div>
                     </div>
                 `;
             }).join('');
+        }
+
+        function togglePledgeRecordsVisibility(personId, total) {
+            const shortEl = document.getElementById('records-short-' + personId);
+            const fullEl = document.getElementById('records-full-' + personId);
+            if (!shortEl || !fullEl) return;
+            const btn = fullEl.nextElementSibling;
+            if (fullEl.style.display === 'none') {
+                shortEl.style.display = 'none';
+                fullEl.style.display = 'block';
+                if (btn) btn.textContent = 'Show less';
+            } else {
+                shortEl.style.display = 'block';
+                fullEl.style.display = 'none';
+                if (btn) btn.textContent = 'Show all records (' + total + ')';
+            }
         }
 
         // Pledge Debt View
@@ -3332,33 +3621,22 @@ ${text}`
                 return debt > 0;
             });
             currentPledgeDebtIndex = 0;
-            
             const container = document.getElementById('pledgeDebtViewer');
-            
             if (pledgeDebtList.length === 0) {
-                container.innerHTML = `
-                    <div class="empty-state">
-                        <div class="empty-state-icon">💰</div>
-                        <h3>No pledges in debt!</h3>
-                        <p>All pledges are up to date.</p>
-                    </div>
-                `;
+                container.innerHTML = '<div class="empty-state"><div class="empty-state-icon">💰</div><h3>No pledges in debt!</h3><p>All pledges are up to date.</p></div>';
                 return;
             }
-            
             showPledgeDebt(0);
         }
 
         function showPledgeDebt(index) {
             if (index < 0 || index >= pledgeDebtList.length) return;
-            
             currentPledgeDebtIndex = index;
             const pledge = pledgeDebtList[index];
             const debt = pledge.schedule !== 'byDate' && !isNaN(parseInt(pledge.schedule)) ? calculateRPPDebt(pledge) : calculatePledgeDebt(pledge);
             const totalPaid = (Array.isArray(pledge.payments) ? pledge.payments : []).reduce((sum, p) => sum + (p.amount || 0), 0);
             const nextDate = getNextDebtIncreaseDate(pledge);
             const increaseAmount = getNextDebtIncreaseAmount(pledge);
-            
             let scheduleText = '';
             if (pledge.schedule === 'byDate') {
                 scheduleText = `By ${new Date(pledge.targetDate).toLocaleDateString()}`;
@@ -3368,7 +3646,6 @@ ${text}`
             } else {
                 scheduleText = `Over ${pledge.schedule} days`;
             }
-            
             const container = document.getElementById('pledgeDebtViewer');
             container.innerHTML = `
                 <div class="debt-student-card">
@@ -3406,9 +3683,18 @@ ${text}`
 
         function navigatePledgeDebt(direction) {
             const newIndex = currentPledgeDebtIndex + direction;
-            if (newIndex >= 0 && newIndex < pledgeDebtList.length) {
-                showPledgeDebt(newIndex);
-            }
+            if (newIndex >= 0 && newIndex < pledgeDebtList.length) showPledgeDebt(newIndex);
+        }
+
+        async function deletePledgeRecordById(pledgeId) {
+            if (!confirm('Delete this pledge record? This cannot be undone.')) return;
+            const pledges = await getPledges();
+            const newPledges = pledges.filter(p => p.id !== pledgeId);
+            await savePledges(newPledges);
+            loadPledgeRecords();
+            loadPledges();
+            loadDashboard();
+            showAlert('pledgeAlert', 'Pledge record deleted.', 'success');
         }
 
         // Pledge Year View
@@ -3485,7 +3771,15 @@ ${text}`
                     }
                 }
             } else if (pledge.schedule !== 'byDate' && !isNaN(parseInt(pledge.schedule))) {
-                const days = parseInt(pledge.schedule);
+                const days = parseInt(pledge.schedule, 10);
+                if (!days || days <= 0) {
+                    // Fall back to month view for invalid schedule
+                    for (let i = 0; i < 12; i++) {
+                        const monthDate = new Date(year, i, 1);
+                        const isPaid = checkPledgeMonthPaid(pledge, year, i);
+                        cells.push({ date: monthDate, paid: isPaid, label: MONTH_NAMES[i] });
+                    }
+                } else {
                 const created = new Date(pledge.createdAt);
                 const pledgeEnd = new Date(created);
                 pledgeEnd.setDate(pledgeEnd.getDate() + days);
@@ -3507,6 +3801,7 @@ ${text}`
                     // Mark as paid if within the paid days range
                     const isPaid = (i < daysPaid);
                     cells.push({ date: cellDate, paid: isPaid, label: (i + 1).toString() });
+                }
                 }
             } else {
                 for (let i = 0; i < 12; i++) {
