@@ -906,8 +906,13 @@
     </div>
 
     <script>
-        const UPSTASH_URL = "https://brief-piglet-43973.upstash.io";
-        const UPSTASH_TOKEN = "AavFAAIncDE0MzMyYmY1ZTkwMWM0YzJjODIxYmI0Mjg4ZDcyNTk2NHAxNDM5NzM";
+        // Upstash REST URL + token from https://console.upstash.com (Redis → your DB)
+        // If the host fails (ERR_NAME_NOT_RESOLVED), data falls back to this browser’s localStorage.
+        const UPSTASH_URL = "https://witty-shrimp-79972.upstash.io";
+        const UPSTASH_TOKEN = "gQAAAAAAAThkAAIncDE5YmZkNjY1YmVjN2E0YzdhYjk2ODRkMGQ3N2IxYmJkZXAxNzk5NzI";
+        const LS_DATA_PREFIX = "masjid_school_";
+        let _storageFallbackWarned = false;
+
         const MONTHLY_FEE = 100;
 
         function escapeHtml(s) {
@@ -917,7 +922,27 @@
             return div.innerHTML;
         }
 
-        // Upstash Redis API functions
+        function localStorageGet(key) {
+            try {
+                const raw = localStorage.getItem(LS_DATA_PREFIX + key);
+                if (raw == null) return undefined;
+                return JSON.parse(raw);
+            } catch (e) {
+                return undefined;
+            }
+        }
+
+        function localStorageSet(key, value) {
+            try {
+                localStorage.setItem(LS_DATA_PREFIX + key, JSON.stringify(value));
+                return { ok: true };
+            } catch (e) {
+                console.error('localStorage SET error:', e);
+                return null;
+            }
+        }
+
+        // Upstash Redis API (+ localStorage if network/DNS fails or DB deleted)
         async function redisGet(key) {
             try {
                 const response = await fetch(`${UPSTASH_URL}/get/${encodeURIComponent(key)}`, {
@@ -930,19 +955,39 @@
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
                 const data = await response.json();
-                if (data.result === null || data.result === undefined) return null;
-                // Handle string result (JSON stringified)
+                if (data.result === null || data.result === undefined) {
+                    const local = localStorageGet(key);
+                    return local !== undefined ? local : null;
+                }
+                let parsed;
                 if (typeof data.result === 'string') {
                     try {
-                        return JSON.parse(data.result);
+                        parsed = JSON.parse(data.result);
                     } catch (e) {
-                        return data.result;
+                        parsed = data.result;
                     }
+                } else {
+                    parsed = data.result;
                 }
-                return data.result;
+                try {
+                    localStorageSet(key, parsed);
+                } catch (e) { /* ignore */ }
+                return parsed;
             } catch (error) {
-                console.error('Redis GET error:', error);
-                showAlert('studentAlert', 'Error loading data. Please refresh the page.', 'error');
+                console.warn('Redis GET unavailable, using local copy if any:', error.message);
+                const local = localStorageGet(key);
+                if (local !== undefined) {
+                    if (!_storageFallbackWarned) {
+                        _storageFallbackWarned = true;
+                        showAlert('studentAlert', 'Cloud sync unavailable — using saved data in this browser only. Fix Upstash URL in index.html or check your network.', 'error');
+                    }
+                    return local;
+                }
+                if (!_storageFallbackWarned) {
+                    _storageFallbackWarned = true;
+                    showAlert('studentAlert', 'Could not load data (Redis unreachable). Using empty lists; saves will stay in this browser until Upstash is fixed.', 'error');
+                }
+                if (key === 'students' || key === 'groups' || key === 'pledges') return [];
                 return null;
             }
         }
@@ -960,11 +1005,16 @@
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
+                localStorageSet(key, value);
                 return await response.json();
             } catch (error) {
-                console.error('Redis SET error:', error);
-                showAlert('studentAlert', 'Error saving data. Please try again.', 'error');
-                return null;
+                console.warn('Redis SET failed, saving locally only:', error.message);
+                const ok = localStorageSet(key, value);
+                if (ok && !_storageFallbackWarned) {
+                    _storageFallbackWarned = true;
+                    showAlert('studentAlert', 'Saved on this device only (cloud sync failed). Update Upstash URL/token when your Redis is back.', 'error');
+                }
+                return ok;
             }
         }
 
@@ -2140,9 +2190,19 @@
             doc.save(`${student.name}_Records.pdf`);
         }
 
-        // Gemini is called via Cloudflare Worker proxy (keeps keys out of GitHub Pages)
-        // Set this to your deployed Worker URL, e.g. "https://masjid-gemini-proxy.<your-subdomain>.workers.dev"
-        const GEMINI_PROXY_URL = 'https://dry-mouse-40fe.quintify2.workers.dev';
+        // ---------------------------------------------------------------------------
+        // Central AI hub (Cloudflare Worker in worker/) — keys stay on the worker.
+        // POST { text, isBase64, mode } with mode "students" | "pledges" for this app.
+        // Deploy: cd worker && npx wrangler deploy — then paste your worker URL here.
+        // ---------------------------------------------------------------------------
+        const AI_HUB_URL = 'https://dry-mouse-40fe.quintify2.workers.dev';
+
+        /** Concatenate all text parts from a Gemini generateContent-style JSON body. */
+        function geminiHubResponseText(data) {
+            const parts = data?.candidates?.[0]?.content?.parts;
+            if (!Array.isArray(parts) || !parts.length) return null;
+            return parts.map((p) => (typeof p.text === 'string' ? p.text : '')).join('');
+        }
 
         // Extract text from file
         async function extractTextFromFile(file) {
@@ -2154,7 +2214,7 @@
                 };
                 reader.onerror = reject;
                 if (file.type === 'application/pdf') {
-                    // For PDF, we'll send to Gemini API directly
+                    // PDF → data URL, sent to AI hub with isBase64: true
                     reader.readAsDataURL(file);
                 } else {
                     reader.readAsText(file);
@@ -2183,25 +2243,39 @@
             }).filter(p => p.name && p.name !== 'Unknown' && p.amount > 0);
         }
 
-        // Call Gemini API (mode: 'students' | 'pledges')
+        // Gemini model for uploads (must match what your API key supports — see worker README)
+        const MASJID_GEMINI_MODEL = 'gemini-2.5-flash';
+
+        // Call central AI hub → Gemini (mode: 'students' | 'pledges' for Masjid extractors)
         async function callGeminiAPI(text, isBase64 = false, mode = 'students') {
-            if (!GEMINI_PROXY_URL) {
-                throw new Error('GEMINI_PROXY_URL is not set. Deploy the Cloudflare Worker and paste its URL into GEMINI_PROXY_URL.');
+            if (!AI_HUB_URL || !String(AI_HUB_URL).trim()) {
+                throw new Error('AI_HUB_URL is not set. Deploy the Cloudflare Worker (see worker/README.md) and paste its URL into AI_HUB_URL in index.html.');
             }
-            const response = await fetch(GEMINI_PROXY_URL, {
+            const response = await fetch(AI_HUB_URL, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text, isBase64, mode })
+                body: JSON.stringify({ text, isBase64, mode, model: MASJID_GEMINI_MODEL })
             });
+            const rawText = await response.text().catch(() => '');
+            let data;
+            try {
+                data = rawText ? JSON.parse(rawText) : {};
+            } catch {
+                throw new Error(`AI hub HTTP ${response.status} — invalid JSON: ${rawText.slice(0, 200)}`);
+            }
             if (!response.ok) {
-                const errText = await response.text().catch(() => '');
-                throw new Error(`Proxy HTTP ${response.status}${errText ? ' - ' + errText : ''}`);
+                const msg = data.error || data.message || rawText || `HTTP ${response.status}`;
+                const base = typeof msg === 'string' ? msg : JSON.stringify(msg);
+                const hint = typeof data.hint === 'string' ? ` ${data.hint}` : '';
+                throw new Error(base + hint);
             }
-            const data = await response.json();
-            if (!data.candidates || !data.candidates[0] || !data.candidates[0].content) {
-                throw new Error('Invalid API response structure');
+            if (data.error && !data.candidates) {
+                throw new Error(typeof data.error === 'string' ? data.error : JSON.stringify(data.error));
             }
-            const content = data.candidates[0].content.parts[0].text;
+            const content = geminiHubResponseText(data);
+            if (content == null || content === '') {
+                throw new Error('Invalid API response: no candidate text from AI hub.');
+            }
                     
                     // Try multiple strategies to extract JSON
                     // Strategy 1: Look for JSON array directly
@@ -2437,8 +2511,9 @@
                     } catch (e) {
                         throw new Error('Could not extract valid JSON from API response. Content: ' + content.substring(0, 200));
                     }
-            // Strategy 4+ and last-resort parsing continues below (unchanged)
         }
+
+        window.__masjidAiBusy = window.__masjidAiBusy || { students: false, pledges: false };
 
         // Handle File Upload
         async function handleFileUpload() {
@@ -2450,6 +2525,8 @@
                 statusDiv.innerHTML = '<span style="color: var(--danger);">Please select a file first.</span>';
                 return;
             }
+            if (window.__masjidAiBusy.students) return;
+            window.__masjidAiBusy.students = true;
 
             const file = fileInput.files[0];
             statusDiv.innerHTML = '<span style="color: var(--primary);">⏳ Processing file...</span>';
@@ -2545,7 +2622,14 @@
                     `;
                 }).filter(html => html && html.trim().length > 0).join('');
             } catch (error) {
-                statusDiv.innerHTML = `<span style="color: var(--danger);">❌ Error: ${error.message}</span>`;
+                const msg = escapeHtml(String(error.message || error));
+                let hint = '';
+                if (/502|All API keys|AI hub|hub HTTP/i.test(String(error.message))) {
+                    hint = '<br><small style="opacity:0.9">The AI worker returned an error. Run <code>cd worker && npx wrangler deploy</code>, confirm the worker URL in <code>AI_HUB_URL</code>, and check that Gemini API keys are valid in Google AI Studio.</small>';
+                }
+                statusDiv.innerHTML = `<span style="color: var(--danger);">❌ Error: ${msg}</span>${hint}`;
+            } finally {
+                window.__masjidAiBusy.students = false;
             }
         }
 
@@ -2677,6 +2761,8 @@
                 statusDiv.innerHTML = '<span style="color: var(--danger);">Please select a file first.</span>';
                 return;
             }
+            if (window.__masjidAiBusy.pledges) return;
+            window.__masjidAiBusy.pledges = true;
             const file = fileInput.files[0];
             statusDiv.innerHTML = '<span style="color: var(--primary);">⏳ Processing file...</span>';
             try {
@@ -2691,19 +2777,28 @@
                     try {
                         extractedData = await callGeminiAPI(base64, true, 'pledges');
                     } catch (apiErr) {
-                        statusDiv.innerHTML = `<span style="color: var(--danger);">API error (try enabling Gemini API): ${apiErr.message}. For PDF, AI is required.</span>`;
+                        const em = escapeHtml(String(apiErr.message || apiErr));
+                        statusDiv.innerHTML = `<span style="color: var(--danger);">API error: ${em}. For PDF, AI is required.</span><br><small>If this is HTTP 502, redeploy the Cloudflare worker and verify API keys.</small>`;
                         return;
                     }
                 } else {
                     const text = await extractTextFromFile(file);
-                    try {
-                        extractedData = await callGeminiAPI(text, false, 'pledges');
-                    } catch (apiErr) {
-                        statusDiv.innerHTML = '<span style="color: var(--primary);">AI unavailable, trying local parse...</span>';
-                        extractedData = extractPledgesFromText(text);
-                        if (!extractedData.length) {
-                            statusDiv.innerHTML = `<span style="color: var(--danger);">Could not extract pledges. API error: ${apiErr.message}. Try CSV/text with columns: Name, Amount, Phone, Schedule Days</span>`;
-                            return;
+                    const nameLow = (file.name || '').toLowerCase();
+                    const looksTabular =
+                        file.type === 'text/csv' ||
+                        nameLow.endsWith('.csv') ||
+                        nameLow.endsWith('.tsv');
+                    extractedData = looksTabular ? extractPledgesFromText(text) : [];
+                    if (!extractedData.length) {
+                        try {
+                            extractedData = await callGeminiAPI(text, false, 'pledges');
+                        } catch (apiErr) {
+                            statusDiv.innerHTML = '<span style="color: var(--primary);">AI unavailable, trying local parse...</span>';
+                            extractedData = extractPledgesFromText(text);
+                            if (!extractedData.length) {
+                                statusDiv.innerHTML = `<span style="color: var(--danger);">Could not extract pledges. API error: ${escapeHtml(String(apiErr.message || apiErr))}. Try CSV/text with columns: Name, Amount, Phone, Schedule Days</span>`;
+                                return;
+                            }
                         }
                     }
                 }
@@ -2772,7 +2867,9 @@
                     `;
                 }).join('');
             } catch (error) {
-                statusDiv.innerHTML = `<span style="color: var(--danger);">❌ Error: ${error.message}</span>`;
+                statusDiv.innerHTML = `<span style="color: var(--danger);">❌ Error: ${escapeHtml(String(error.message || error))}</span>`;
+            } finally {
+                window.__masjidAiBusy.pledges = false;
             }
         }
 
