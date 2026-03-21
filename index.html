@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>School Payment Management System</title>
     <script src="https://unpkg.com/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <style>
         * {
             margin: 0;
@@ -542,6 +543,70 @@
             border-radius: 5px;
             font-size: 0.85rem;
         }
+
+        /* Data / analytics tab — 2 charts per row, high-DPI canvases */
+        .data-intro {
+            color: var(--text-light);
+            margin-bottom: 16px;
+            max-width: 720px;
+            line-height: 1.5;
+        }
+        .data-toolbar {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-bottom: 24px;
+        }
+        .data-charts-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 24px;
+        }
+        @media (max-width: 960px) {
+            .data-charts-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+        .data-chart-card {
+            background: linear-gradient(180deg, #ffffff 0%, var(--bg) 100%);
+            border: 2px solid var(--border);
+            border-radius: 16px;
+            padding: 20px 20px 12px;
+            box-shadow: 0 4px 20px rgba(15, 23, 42, 0.06);
+            position: relative;
+            overflow: hidden;
+        }
+        .data-chart-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, var(--primary), var(--secondary), var(--warning));
+            opacity: 0.85;
+        }
+        .data-chart-card h3 {
+            font-size: 1rem;
+            font-weight: 700;
+            color: var(--text);
+            margin-bottom: 4px;
+            letter-spacing: -0.02em;
+        }
+        .data-chart-card .data-chart-sub {
+            font-size: 0.8rem;
+            color: var(--text-light);
+            margin-bottom: 12px;
+        }
+        .data-chart-wrap {
+            position: relative;
+            height: 280px;
+            width: 100%;
+        }
+        .data-chart-wrap canvas {
+            max-height: 280px;
+        }
     </style>
 </head>
 <body>
@@ -551,6 +616,7 @@
             <p style="color: var(--text-light); margin-top: 10px;">Manage students, groups, and payments efficiently</p>
             <div class="nav-tabs">
                 <button class="nav-tab active" onclick="showSection('dashboard')">Dashboard</button>
+                <button class="nav-tab" onclick="showSection('data')">Data</button>
                 <button class="nav-tab" onclick="showSection('students')">Students</button>
                 <button class="nav-tab" onclick="showSection('groups')">Groups</button>
                 <button class="nav-tab" onclick="showSection('records')">Records</button>
@@ -593,6 +659,52 @@
                 </div>
             </div>
             <div id="dashboardContent"></div>
+        </div>
+
+        <!-- Data / Analytics Section -->
+        <div id="data" class="section">
+            <h2 style="margin-bottom: 8px;">📈 Data &amp; analytics</h2>
+            <p class="data-intro">Visual overview of collections, student debt, groups, and pledges. Charts refresh when you open this tab or click Refresh.</p>
+            <div class="data-toolbar">
+                <button type="button" class="btn btn-primary" onclick="loadDataCharts()">🔄 Refresh charts</button>
+            </div>
+            <div class="data-charts-grid">
+                <div class="data-chart-card">
+                    <h3>Money collected (by month)</h3>
+                    <div class="data-chart-sub">Student + pledge payments combined</div>
+                    <div class="data-chart-wrap"><canvas id="chartData1" aria-label="Money by month line chart"></canvas></div>
+                </div>
+                <div class="data-chart-card">
+                    <h3>Cumulative collections</h3>
+                    <div class="data-chart-sub">Running total of all recorded payments</div>
+                    <div class="data-chart-wrap"><canvas id="chartData2" aria-label="Cumulative money line chart"></canvas></div>
+                </div>
+                <div class="data-chart-card">
+                    <h3>Students: paid vs in debt</h3>
+                    <div class="data-chart-sub">Count by current balance</div>
+                    <div class="data-chart-wrap"><canvas id="chartData3" aria-label="Students debt doughnut"></canvas></div>
+                </div>
+                <div class="data-chart-card">
+                    <h3>Outstanding debt by amount band</h3>
+                    <div class="data-chart-sub">Students currently owing (dollar ranges)</div>
+                    <div class="data-chart-wrap"><canvas id="chartData4" aria-label="Debt bands pie"></canvas></div>
+                </div>
+                <div class="data-chart-card">
+                    <h3>Payment methods</h3>
+                    <div class="data-chart-sub">Number of student payment records</div>
+                    <div class="data-chart-wrap"><canvas id="chartData5" aria-label="Payment methods doughnut"></canvas></div>
+                </div>
+                <div class="data-chart-card">
+                    <h3>Group total debt</h3>
+                    <div class="data-chart-sub">Sum of member balances per group</div>
+                    <div class="data-chart-wrap"><canvas id="chartData6" aria-label="Group debt bar chart"></canvas></div>
+                </div>
+                <div class="data-chart-card">
+                    <h3>Pledges: active vs completed</h3>
+                    <div class="data-chart-sub">All pledge records</div>
+                    <div class="data-chart-wrap"><canvas id="chartData7" aria-label="Pledge status pie"></canvas></div>
+                </div>
+            </div>
         </div>
 
         <!-- Students Section -->
@@ -1071,6 +1183,9 @@
             
             if (sectionId === 'dashboard') {
                 loadDashboard();
+            } else if (sectionId === 'data') {
+                // Defer until layout so canvases have width (section was display:none)
+                requestAnimationFrame(() => requestAnimationFrame(() => loadDataCharts()));
             } else if (sectionId === 'students') {
                 loadStudents();
             } else if (sectionId === 'groups') {
@@ -1267,6 +1382,291 @@
             document.getElementById('totalGroups').textContent = groups.length;
             document.getElementById('totalPledges').textContent = activePledges.length;
             document.getElementById('overduePledges').textContent = overduePledges;
+        }
+
+        // --- Data tab: Chart.js analytics (7 charts, 2 per row) ---
+        const __chartColors = {
+            primary: '#4f46e5',
+            primaryLight: 'rgba(79, 70, 229, 0.18)',
+            success: '#10b981',
+            danger: '#ef4444',
+            warning: '#f59e0b',
+            purple: '#8b5cf6',
+            pink: '#ec4899',
+            cyan: '#06b6d4',
+            orange: '#f97316',
+            slate: '#94a3b8',
+        };
+
+        function destroyDataCharts() {
+            (window.__masjidChartInstances || []).forEach((c) => {
+                try { c.destroy(); } catch (e) {}
+            });
+            window.__masjidChartInstances = [];
+        }
+
+        function monthKeyFromDate(d) {
+            const dt = new Date(d);
+            if (isNaN(dt.getTime())) return null;
+            return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}`;
+        }
+
+        function formatMonthLabel(key) {
+            const parts = key.split('-').map(Number);
+            return new Date(parts[0], parts[1] - 1, 1).toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
+        }
+
+        const __chartBaseOpts = {
+            responsive: true,
+            maintainAspectRatio: false,
+            devicePixelRatio: Math.min(window.devicePixelRatio || 2, 2.5),
+            animation: { duration: 780, easing: 'easeOutQuart' },
+        };
+
+        async function loadDataCharts() {
+            if (typeof Chart === 'undefined') {
+                alert('Charts could not load. Check your internet connection (Chart.js CDN).');
+                return;
+            }
+            destroyDataCharts();
+            const students = await getStudents();
+            const groups = await getGroups();
+            const pledges = await getPledges();
+
+            const inst = [];
+            const pushChart = (canvasId, config) => {
+                const el = document.getElementById(canvasId);
+                if (!el) return;
+                inst.push(new Chart(el, config));
+            };
+
+            const byMonth = {};
+            const addPaymentDate = (date, amount) => {
+                const k = monthKeyFromDate(date);
+                if (!k) return;
+                byMonth[k] = (byMonth[k] || 0) + (Number(amount) || 0);
+            };
+            students.forEach((s) => (Array.isArray(s.payments) ? s.payments : []).forEach((p) => addPaymentDate(p.date, p.amount)));
+            pledges.forEach((pl) => (Array.isArray(pl.payments) ? pl.payments : []).forEach((pay) => addPaymentDate(pay.date, pay.amount)));
+
+            let monthKeys = Object.keys(byMonth).sort();
+            if (monthKeys.length === 0) {
+                const k = monthKeyFromDate(new Date());
+                monthKeys = [k];
+                byMonth[k] = 0;
+            }
+            if (monthKeys.length > 24) monthKeys = monthKeys.slice(-24);
+            const monthLabels = monthKeys.map(formatMonthLabel);
+            const monthVals = monthKeys.map((k) => Math.round((byMonth[k] || 0) * 100) / 100);
+            let run = 0;
+            const cumVals = monthVals.map((v) => {
+                run += v;
+                return Math.round(run * 100) / 100;
+            });
+
+            pushChart('chartData1', {
+                type: 'line',
+                data: {
+                    labels: monthLabels,
+                    datasets: [{
+                        label: 'Collected ($)',
+                        data: monthVals,
+                        borderColor: __chartColors.primary,
+                        backgroundColor: __chartColors.primaryLight,
+                        fill: true,
+                        tension: 0.35,
+                        pointRadius: 3,
+                        pointHoverRadius: 6,
+                        borderWidth: 2,
+                    }],
+                },
+                options: {
+                    ...__chartBaseOpts,
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                label: (ctx) => '$' + Number(ctx.parsed.y != null ? ctx.parsed.y : ctx.raw).toFixed(2),
+                            },
+                        },
+                    },
+                    scales: {
+                        x: { grid: { display: false }, ticks: { maxRotation: 45, font: { size: 11 } } },
+                        y: {
+                            beginAtZero: true,
+                            ticks: { callback: (v) => '$' + v, font: { size: 11 } },
+                            grid: { color: 'rgba(148, 163, 184, 0.18)' },
+                        },
+                    },
+                },
+            });
+
+            pushChart('chartData2', {
+                type: 'line',
+                data: {
+                    labels: monthLabels,
+                    datasets: [{
+                        label: 'Cumulative ($)',
+                        data: cumVals,
+                        borderColor: __chartColors.success,
+                        backgroundColor: 'rgba(16, 185, 129, 0.14)',
+                        fill: true,
+                        tension: 0.35,
+                        pointRadius: 2,
+                        borderWidth: 2,
+                    }],
+                },
+                options: {
+                    ...__chartBaseOpts,
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                label: (ctx) => '$' + Number(ctx.parsed.y != null ? ctx.parsed.y : ctx.raw).toFixed(2),
+                            },
+                        },
+                    },
+                    scales: {
+                        x: { grid: { display: false }, ticks: { maxRotation: 45 } },
+                        y: {
+                            beginAtZero: true,
+                            ticks: { callback: (v) => '$' + v },
+                            grid: { color: 'rgba(148, 163, 184, 0.18)' },
+                        },
+                    },
+                },
+            });
+
+            let paidC = 0;
+            let debtC = 0;
+            students.forEach((s) => {
+                const d = calculateDebt(s);
+                if (d <= 0) paidC++;
+                else debtC++;
+            });
+            const hasStudents = students.length > 0;
+            pushChart('chartData3', {
+                type: 'doughnut',
+                data: {
+                    labels: hasStudents ? ['Paid up', 'In debt'] : ['No students'],
+                    datasets: [{
+                        data: hasStudents ? [paidC, debtC] : [1],
+                        backgroundColor: hasStudents ? [__chartColors.success, __chartColors.danger] : [__chartColors.slate],
+                        borderWidth: 2,
+                        borderColor: '#fff',
+                    }],
+                },
+                options: {
+                    ...__chartBaseOpts,
+                    plugins: { legend: { position: 'bottom', labels: { padding: 14, font: { size: 12 } } } },
+                },
+            });
+
+            const buckets = { '$1–100': 0, '$101–300': 0, '$301–600': 0, '$601+': 0 };
+            students.forEach((s) => {
+                const d = calculateDebt(s);
+                if (d <= 0) return;
+                if (d <= 100) buckets['$1–100']++;
+                else if (d <= 300) buckets['$101–300']++;
+                else if (d <= 600) buckets['$301–600']++;
+                else buckets['$601+']++;
+            });
+            const bLabels = Object.keys(buckets);
+            const bData = bLabels.map((l) => buckets[l]);
+            const hasBuckets = bData.some((v) => v > 0);
+            pushChart('chartData4', {
+                type: 'pie',
+                data: {
+                    labels: hasBuckets ? bLabels : ['No outstanding debt'],
+                    datasets: [{
+                        data: hasBuckets ? bData : [1],
+                        backgroundColor: hasBuckets
+                            ? [__chartColors.warning, __chartColors.orange, __chartColors.danger, '#7c3aed']
+                            : [__chartColors.slate],
+                        borderWidth: 2,
+                        borderColor: '#fff',
+                    }],
+                },
+                options: {
+                    ...__chartBaseOpts,
+                    plugins: { legend: { position: 'bottom' } },
+                },
+            });
+
+            const methods = {};
+            students.forEach((s) =>
+                (Array.isArray(s.payments) ? s.payments : []).forEach((p) => {
+                    const m = p.method && String(p.method).trim() ? String(p.method).trim() : 'Not specified';
+                    methods[m] = (methods[m] || 0) + 1;
+                })
+            );
+            const mLabels = Object.keys(methods);
+            const mData = mLabels.map((k) => methods[k]);
+            const colors5 = [__chartColors.primary, __chartColors.success, __chartColors.warning, __chartColors.purple, __chartColors.cyan, __chartColors.pink];
+            pushChart('chartData5', {
+                type: 'doughnut',
+                data: {
+                    labels: mLabels.length ? mLabels : ['No payments yet'],
+                    datasets: [{
+                        data: mLabels.length ? mData : [1],
+                        backgroundColor: mLabels.length ? mLabels.map((_, i) => colors5[i % colors5.length]) : [__chartColors.slate],
+                        borderWidth: 2,
+                        borderColor: '#fff',
+                    }],
+                },
+                options: { ...__chartBaseOpts, plugins: { legend: { position: 'bottom' } } },
+            });
+
+            const gLabels = groups.map((g) => (g.name && g.name.length > 22 ? g.name.slice(0, 20) + '…' : g.name || 'Group'));
+            const gDebts = groups.map((group) => {
+                const memberIds = group.studentIds || [];
+                return students.filter((s) => memberIds.includes(s.id)).reduce((sum, s) => sum + calculateDebt(s), 0);
+            });
+            pushChart('chartData6', {
+                type: 'bar',
+                data: {
+                    labels: groups.length ? gLabels : ['No groups'],
+                    datasets: [{
+                        label: 'Debt ($)',
+                        data: groups.length ? gDebts.map((v) => Math.round(v * 100) / 100) : [0],
+                        backgroundColor: groups.length
+                            ? gDebts.map((v) => (v > 500 ? __chartColors.danger : v > 200 ? __chartColors.warning : __chartColors.primary))
+                            : [__chartColors.slate],
+                        borderRadius: 8,
+                    }],
+                },
+                options: {
+                    ...__chartBaseOpts,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: { grid: { display: false }, ticks: { font: { size: 10 }, maxRotation: 55 } },
+                        y: {
+                            beginAtZero: true,
+                            ticks: { callback: (v) => '$' + v },
+                            grid: { color: 'rgba(148, 163, 184, 0.18)' },
+                        },
+                    },
+                },
+            });
+
+            const act = pledges.filter((p) => !p.completed).length;
+            const comp = pledges.filter((p) => p.completed).length;
+            const hasPl = pledges.length > 0;
+            pushChart('chartData7', {
+                type: 'pie',
+                data: {
+                    labels: hasPl ? ['Active', 'Completed'] : ['No pledges'],
+                    datasets: [{
+                        data: hasPl ? [act, comp] : [1],
+                        backgroundColor: hasPl ? [__chartColors.primary, __chartColors.success] : [__chartColors.slate],
+                        borderWidth: 2,
+                        borderColor: '#fff',
+                    }],
+                },
+                options: { ...__chartBaseOpts, plugins: { legend: { position: 'bottom' } } },
+            });
+
+            window.__masjidChartInstances = inst;
         }
 
         function onStudentSearchChange(e) {
